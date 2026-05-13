@@ -1,14 +1,15 @@
 use moon_action::{Action, ActionStatus, Operation};
 use moon_app_context::AppContext;
+use moon_cache::InProcessFileLock;
 use moon_env_var::GlobalEnvBag;
 use moon_hash::ContentHasher;
 use serde::Serialize;
-use starbase_utils::fs::{self, FileLock};
+use starbase_utils::fs;
 use std::path::PathBuf;
 
 pub struct HashLock {
     #[allow(dead_code)]
-    lock: FileLock,
+    lock: InProcessFileLock,
     manifest_path: PathBuf,
     remove_on_drop: bool,
 }
@@ -51,7 +52,7 @@ pub fn create_hasher(
     Ok(hasher)
 }
 
-pub fn create_hash_and_return_lock(
+pub async fn create_hash_and_return_lock(
     action: &mut Action,
     app_context: &AppContext,
     data: impl Serialize,
@@ -62,7 +63,8 @@ pub fn create_hash_and_return_lock(
 
     let lock = app_context
         .cache_engine
-        .create_lock(format!("{}-{hash}", action.get_prefix()))?;
+        .create_lock(format!("{}-{hash}", action.get_prefix()))
+        .await?;
 
     app_context.cache_engine.hash.save_manifest(&mut hasher)?;
 
@@ -73,7 +75,7 @@ pub fn create_hash_and_return_lock(
     })
 }
 
-pub fn create_hash_and_return_lock_if_changed(
+pub async fn create_hash_and_return_lock_if_changed(
     action: &mut Action,
     app_context: &AppContext,
     fingerprint: impl Serialize,
@@ -85,7 +87,8 @@ pub fn create_hash_and_return_lock_if_changed(
 
     let lock = app_context
         .cache_engine
-        .create_lock(format!("{}-{hash}", action.get_prefix()))?;
+        .create_lock(format!("{}-{hash}", action.get_prefix()))
+        .await?;
 
     // If the hash manifest exists, then it has run before. Check this after
     // locking so that concurrent processes wait for in-progress actions.

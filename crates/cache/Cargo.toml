@@ -18,10 +18,12 @@ moon_time = { path = "../time" }
 miette = { workspace = true }
 serde = { workspace = true }
 starbase_utils = { workspace = true, features = ["fs-lock", "json"] }
+tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 starbase_sandbox = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 
 [lints]
 workspace = true

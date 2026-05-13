@@ -159,7 +159,8 @@ pub async fn install_dependencies(
             toolchain.metadata.vendor_dir_name.is_some()
                 && !has_vendor_installed_dependencies(&toolchain, &deps_root)
         },
-    )?
+    )
+    .await?
     else {
         debug!(
             toolchain_id = toolchain.id.as_str(),

@@ -7,7 +7,6 @@ use starbase_sandbox::{Sandbox, create_empty_sandbox};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc;
 use std::time::Duration;
 
 #[derive(Clone, Serialize)]
@@ -36,8 +35,8 @@ fn has_vendor_contents(vendor_dir: &Path) -> bool {
 mod hash_locks {
     use super::*;
 
-    #[test]
-    fn removes_hash_manifest_when_dropped_without_persisting() {
+    #[tokio::test]
+    async fn removes_hash_manifest_when_dropped_without_persisting() {
         let (_, app_context) = create_workspace();
         let fingerprint = TestFingerprint { input: "failure" };
         let mut action = Action::default();
@@ -48,6 +47,7 @@ mod hash_locks {
             fingerprint.clone(),
             || false,
         )
+        .await
         .unwrap()
         .unwrap();
 
@@ -63,6 +63,7 @@ mod hash_locks {
             fingerprint.clone(),
             || false,
         )
+        .await
         .unwrap()
         .unwrap();
 
@@ -75,13 +76,14 @@ mod hash_locks {
             create_hash_and_return_lock_if_changed(&mut action, &app_context, fingerprint, || {
                 false
             })
+            .await
             .unwrap()
             .is_none()
         );
     }
 
-    #[test]
-    fn does_not_save_hash_manifest_when_lock_creation_fails() {
+    #[tokio::test]
+    async fn does_not_save_hash_manifest_when_lock_creation_fails() {
         let (_, app_context) = create_workspace();
         let fingerprint = TestFingerprint {
             input: "lock-failure",
@@ -107,13 +109,14 @@ mod hash_locks {
             create_hash_and_return_lock_if_changed(&mut action, &app_context, fingerprint, || {
                 false
             })
+            .await
             .is_err()
         );
         assert_eq!(count_hash_manifests(&app_context), 0);
     }
 
-    #[test]
-    fn revalidates_forced_vendor_installs_after_waiting_on_lock() {
+    #[tokio::test]
+    async fn revalidates_forced_vendor_installs_after_waiting_on_lock() {
         let (sandbox, app_context) = create_workspace();
         let fingerprint = TestFingerprint { input: "vendor" };
         let vendor_dir = sandbox.path().join("vendor");
@@ -125,38 +128,38 @@ mod hash_locks {
             fingerprint.clone(),
             || true,
         )
+        .await
         .unwrap()
         .unwrap();
 
-        let (checked_tx, checked_rx) = mpsc::channel();
-        let app_context_for_thread = Arc::clone(&app_context);
-        let vendor_dir_for_thread = vendor_dir.clone();
+        let app_context_for_task = Arc::clone(&app_context);
+        let vendor_dir_for_task = vendor_dir.clone();
+        let fp2 = fingerprint.clone();
 
-        let handle = std::thread::spawn(move || {
+        // Spawn a second task that will block on the semaphore until lock is dropped.
+        let handle = tokio::spawn(async move {
             let mut action = Action::default();
-
             create_hash_and_return_lock_if_changed(
                 &mut action,
-                &app_context_for_thread,
-                fingerprint,
-                || {
-                    let _ = checked_tx.send(());
-
-                    !has_vendor_contents(&vendor_dir_for_thread)
-                },
+                &app_context_for_task,
+                fp2,
+                || !has_vendor_contents(&vendor_dir_for_task),
             )
+            .await
             .unwrap()
             .is_none()
         });
 
-        assert!(checked_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        // Give the runtime a moment to park the spawned task on the semaphore.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!handle.is_finished(), "second task should be blocked on lock");
 
         sandbox.create_file("vendor/dependency", "installed");
         lock.persist_hash_manifest();
         drop(lock);
 
-        assert!(handle.join().unwrap());
-        assert!(checked_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        // The second task should now unblock, find the manifest, and return is_none.
+        assert!(handle.await.unwrap());
         assert_eq!(count_hash_manifests(&app_context), 1);
     }
 }

@@ -149,7 +149,7 @@ impl WorkspaceBuilder {
         }
 
         // Create a lock to avoid colliding cache writes
-        let _lock = cache_engine.create_lock(LOCK_FILE_NAME)?;
+        let _lock = cache_engine.create_lock(LOCK_FILE_NAME).await?;
 
         // Hash the project graph based on the preloaded state
         let mut fingerprint = WorkspaceGraphFingerprint::default();

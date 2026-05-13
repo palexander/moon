@@ -7,11 +7,30 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use starbase_utils::fs::{FileLock, RemoveDirContentsResult};
 use starbase_utils::{fs, json};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, instrument};
+
+/// A file lock that serializes both intra-process (tokio) and inter-process
+/// (OS-level flock) access to a shared lock file.
+///
+/// On Linux, flock(2) locks are per-open-file-description (OFD), not
+/// per-process: two open() calls from the same PID produce independent OFDs
+/// that deadlock each other on flock(LOCK_EX). The `_process_guard` prevents
+/// concurrent tokio tasks in the same process from ever reaching the flock
+/// layer simultaneously, while `file_lock` retains the inter-process guarantee.
+///
+/// Drop order matters: `file_lock` releases the OS lock first, then
+/// `_process_guard` wakes the next in-process waiter. Rust drops fields in
+/// declaration order.
+pub struct InProcessFileLock {
+    pub file_lock: FileLock,
+    _process_guard: OwnedSemaphorePermit,
+}
 
 #[derive(Debug)]
 pub struct CacheEngine {
@@ -30,6 +49,7 @@ pub struct CacheEngine {
 
     mode: CacheMode,
     forced_mode: RwLock<Option<CacheMode>>,
+    in_process_locks: Mutex<HashMap<PathBuf, Arc<Semaphore>>>,
 }
 
 impl CacheEngine {
@@ -61,6 +81,7 @@ impl CacheEngine {
             cache_dir: dir,
             mode: get_cache_mode(),
             forced_mode: RwLock::new(None),
+            in_process_locks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -110,16 +131,42 @@ impl CacheEngine {
         Ok((result.files_deleted, result.bytes_saved))
     }
 
-    pub fn create_lock<T: AsRef<str>>(&self, name: T) -> miette::Result<FileLock> {
+    pub async fn create_lock<T: AsRef<str>>(&self, name: T) -> miette::Result<InProcessFileLock> {
         let mut name = encode_component(name.as_ref());
 
         if !name.ends_with(".lock") {
             name.push_str(".lock");
         }
 
-        let guard = fs::lock_file(self.cache_dir.join("locks").join(name))?;
+        let lock_path = self.cache_dir.join("locks").join(&name);
 
-        Ok(guard)
+        // Serialize intra-process access before calling flock(2).
+        // Linux flock(2) semantics are per-open-file-description (OFD): two
+        // open() calls from the same PID produce independent OFDs that
+        // deadlock each other on flock(LOCK_EX). The tokio semaphore below
+        // prevents concurrent tokio tasks in the same process from ever racing
+        // for the same lock file, while the subsequent flock still provides the
+        // inter-process guarantee for the rare case of two moon binaries sharing
+        // the same workspace.
+        let sem = {
+            let mut map = self.in_process_locks.lock().expect("in_process_locks poisoned");
+            Arc::clone(
+                map.entry(lock_path.clone())
+                    .or_insert_with(|| Arc::new(Semaphore::new(1))),
+            )
+        };
+
+        let process_guard = sem
+            .acquire_owned()
+            .await
+            .expect("CacheEngine lock semaphore closed unexpectedly");
+
+        let file_lock = fs::lock_file(&lock_path)?;
+
+        Ok(InProcessFileLock {
+            file_lock,
+            _process_guard: process_guard,
+        })
     }
 
     pub fn write<K, T>(&self, path: K, data: &T) -> miette::Result<()>
@@ -198,5 +245,71 @@ impl CacheEngine {
         }
 
         self.mode
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use starbase_sandbox::create_empty_sandbox;
+    use std::time::Duration;
+
+    /// Regression test: two concurrent tokio tasks calling create_lock with the
+    /// same name must both complete. Before the in-process semaphore was added,
+    /// the second task would block on flock(LOCK_EX) against the first task's
+    /// open FD (per-OFD flock semantics on Linux), starving the tokio runtime
+    /// and deadlocking indefinitely.
+    #[tokio::test]
+    async fn create_lock_concurrent_same_name_does_not_deadlock() {
+        let sandbox = create_empty_sandbox();
+        let engine = Arc::new(CacheEngine::new(sandbox.path()).unwrap());
+
+        let e1 = Arc::clone(&engine);
+        let e2 = Arc::clone(&engine);
+
+        let t1 = tokio::spawn(async move {
+            let _lock = e1.create_lock("concurrent-lock-test").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        });
+
+        let t2 = tokio::spawn(async move {
+            let _lock = e2.create_lock("concurrent-lock-test").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            t1.await.unwrap();
+            t2.await.unwrap();
+        })
+        .await
+        .expect("both lock acquisitions must complete — intra-process deadlock detected");
+    }
+
+    #[tokio::test]
+    async fn create_lock_different_names_run_concurrently() {
+        let sandbox = create_empty_sandbox();
+        let engine = Arc::new(CacheEngine::new(sandbox.path()).unwrap());
+
+        let e1 = Arc::clone(&engine);
+        let e2 = Arc::clone(&engine);
+
+        let start = tokio::time::Instant::now();
+
+        let t1 = tokio::spawn(async move {
+            let _lock = e1.create_lock("lock-a").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let t2 = tokio::spawn(async move {
+            let _lock = e2.create_lock("lock-b").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        t1.await.unwrap();
+        t2.await.unwrap();
+
+        // Both tasks held different locks and ran concurrently, so elapsed
+        // should be closer to 100ms than 200ms.
+        assert!(start.elapsed() < Duration::from_millis(180));
     }
 }

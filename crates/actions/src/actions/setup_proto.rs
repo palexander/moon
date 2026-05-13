@@ -70,7 +70,7 @@ pub async fn setup_proto(
     }
 
     // Install proto
-    let _lock = app_context.cache_engine.create_lock("proto-install")?;
+    let _lock = app_context.cache_engine.create_lock("proto-install").await?;
 
     app_context.console.print_checkpoint(
         Checkpoint::Setup,

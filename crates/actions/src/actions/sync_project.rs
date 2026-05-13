@@ -44,10 +44,10 @@ pub async fn sync_project(
     debug!("Syncing project {}", color::id(project_id));
 
     // Lock the project to avoid collisions
-    let _lock =
-        app_context
-            .cache_engine
-            .create_lock(format!("{}-{}", action.get_prefix(), project_id))?;
+    let _lock = app_context
+        .cache_engine
+        .create_lock(format!("{}-{}", action.get_prefix(), project_id))
+        .await?;
 
     // Collect all project dependencies so we can pass them along
     let mut dependencies = FxHashMap::default();
