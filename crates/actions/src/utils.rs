@@ -1,10 +1,12 @@
 use moon_action::{Action, ActionStatus, Operation};
 use moon_app_context::AppContext;
+use moon_cache::CacheEngine;
 use moon_env_var::GlobalEnvBag;
 use moon_hash::ContentHasher;
 use serde::Serialize;
 use starbase_utils::fs::{self, FileLock};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub struct HashLock {
     #[allow(dead_code)]
@@ -51,7 +53,20 @@ pub fn create_hasher(
     Ok(hasher)
 }
 
-pub fn create_hash_and_return_lock(
+/// Acquires a file lock without parking the tokio worker thread.
+///
+/// On Linux, flock(2) is per-open-file-description: two tasks racing the same
+/// lock file from the same process will deadlock if the blocking flock call runs
+/// directly on a tokio worker thread. spawn_blocking moves it to a thread-pool
+/// thread so the runtime stays live while waiting.
+pub(crate) async fn acquire_lock(engine: &Arc<CacheEngine>, name: String) -> miette::Result<FileLock> {
+    let engine = Arc::clone(engine);
+    tokio::task::spawn_blocking(move || engine.create_lock(name))
+        .await
+        .expect("spawn_blocking panicked")
+}
+
+pub async fn create_hash_and_return_lock(
     action: &mut Action,
     app_context: &AppContext,
     data: impl Serialize,
@@ -60,9 +75,11 @@ pub fn create_hash_and_return_lock(
     let hash = hasher.generate_hash()?;
     let manifest_path = app_context.cache_engine.hash.get_manifest_path(&hash);
 
-    let lock = app_context
-        .cache_engine
-        .create_lock(format!("{}-{hash}", action.get_prefix()))?;
+    let lock = acquire_lock(
+        &app_context.cache_engine,
+        format!("{}-{hash}", action.get_prefix()),
+    )
+    .await?;
 
     app_context.cache_engine.hash.save_manifest(&mut hasher)?;
 
@@ -73,7 +90,7 @@ pub fn create_hash_and_return_lock(
     })
 }
 
-pub fn create_hash_and_return_lock_if_changed(
+pub async fn create_hash_and_return_lock_if_changed(
     action: &mut Action,
     app_context: &AppContext,
     fingerprint: impl Serialize,
@@ -83,9 +100,11 @@ pub fn create_hash_and_return_lock_if_changed(
     let hash = hasher.generate_hash()?;
     let manifest_path = app_context.cache_engine.hash.get_manifest_path(&hash);
 
-    let lock = app_context
-        .cache_engine
-        .create_lock(format!("{}-{hash}", action.get_prefix()))?;
+    let lock = acquire_lock(
+        &app_context.cache_engine,
+        format!("{}-{hash}", action.get_prefix()),
+    )
+    .await?;
 
     // If the hash manifest exists, then it has run before. Check this after
     // locking so that concurrent processes wait for in-progress actions.

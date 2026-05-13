@@ -336,7 +336,7 @@ impl WorkspaceMocker {
     pub fn mock_app_context(&self) -> AppContext {
         AppContext {
             cli_version: Version::parse(env!("CARGO_PKG_VERSION")).unwrap(),
-            cache_engine: Arc::new(self.mock_cache_engine()),
+            cache_engine: self.mock_cache_engine(),
             config_dir: self.config_dir.clone(),
             console: Arc::new(self.mock_console()),
             daemon_dir: self.config_dir.join("cache/daemon"),
@@ -353,8 +353,8 @@ impl WorkspaceMocker {
         }
     }
 
-    pub fn mock_cache_engine(&self) -> CacheEngine {
-        CacheEngine::new(&self.config_dir).unwrap()
+    pub fn mock_cache_engine(&self) -> Arc<CacheEngine> {
+        Arc::new(CacheEngine::new(&self.config_dir).unwrap())
     }
 
     pub fn mock_console(&self) -> Console {
@@ -470,7 +470,7 @@ impl WorkspaceMocker {
         options: &WorkspaceMockOptions,
     ) -> WorkspaceGraph {
         let mut builder = match &options.cache {
-            Some(engine) => WorkspaceBuilderAsync::new_with_cache(context, engine)
+            Some(engine) => WorkspaceBuilderAsync::new_with_cache(context, Arc::clone(engine))
                 .await
                 .unwrap(),
             None => WorkspaceBuilderAsync::new(context).await.unwrap(),
@@ -494,7 +494,7 @@ impl WorkspaceMocker {
         options: &WorkspaceMockOptions,
     ) -> WorkspaceGraph {
         let mut builder = match &options.cache {
-            Some(engine) => WorkspaceBuilder::new_with_cache(context, engine)
+            Some(engine) => WorkspaceBuilder::new_with_cache(context, Arc::clone(engine))
                 .await
                 .unwrap(),
             None => WorkspaceBuilder::new(context).await.unwrap(),
@@ -515,7 +515,7 @@ impl WorkspaceMocker {
 
 #[derive(Default)]
 pub struct WorkspaceMockOptions {
-    pub cache: Option<CacheEngine>,
+    pub cache: Option<Arc<CacheEngine>>,
     pub context: Option<WorkspaceBuilderContext>,
     pub ids: Vec<String>,
     pub sync: bool,

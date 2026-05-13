@@ -117,9 +117,7 @@ impl CacheEngine {
             name.push_str(".lock");
         }
 
-        let guard = fs::lock_file(self.cache_dir.join("locks").join(name))?;
-
-        Ok(guard)
+        Ok(fs::lock_file(self.cache_dir.join("locks").join(name))?)
     }
 
     pub fn write<K, T>(&self, path: K, data: &T) -> miette::Result<()>
@@ -198,5 +196,43 @@ impl CacheEngine {
         }
 
         self.mode
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use starbase_sandbox::create_empty_sandbox;
+    use std::time::Duration;
+
+    /// On Linux, flock(2) is per-open-file-description (OFD): two open() calls
+    /// from the same process produce independent OFDs, so flock(LOCK_EX) on the
+    /// second OFD blocks even when this process already holds the lock via the
+    /// first.  Calling create_lock directly on a tokio worker thread would park
+    /// that thread, starving the runtime.  Callers must use spawn_blocking.
+    ///
+    /// The test observes the block via is_finished() on an OS thread, then drops
+    /// the first lock to let the second complete without hanging.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_ofd_flock_blocks_same_process_second_open() {
+        let sandbox = create_empty_sandbox();
+        let lock_path = sandbox.path().join("test.lock");
+
+        let lock1 = fs::lock_file(&lock_path).unwrap();
+
+        let path2 = lock_path.clone();
+        let handle = std::thread::spawn(move || fs::lock_file(&path2));
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        assert!(
+            !handle.is_finished(),
+            "expected the background thread to be blocked on flock(LOCK_EX) \
+             via a second OFD — Linux per-OFD semantics not in effect"
+        );
+
+        drop(lock1);
+        handle.join().unwrap().expect("second lock acquisition failed after first was released");
     }
 }

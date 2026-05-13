@@ -131,7 +131,7 @@ impl WorkspaceBuilder {
     #[instrument(skip_all)]
     pub async fn new_with_cache(
         context: WorkspaceBuilderContext,
-        cache_engine: &CacheEngine,
+        cache_engine: Arc<CacheEngine>,
     ) -> miette::Result<WorkspaceBuilder> {
         let is_vcs_enabled = context
             .vcs
@@ -148,8 +148,14 @@ impl WorkspaceBuilder {
             return Ok(graph);
         }
 
-        // Create a lock to avoid colliding cache writes
-        let _lock = cache_engine.create_lock(LOCK_FILE_NAME)?;
+        // Create a lock to avoid colliding cache writes.
+        // spawn_blocking prevents Linux per-OFD flock from parking the tokio worker thread.
+        let _lock = {
+            let engine = Arc::clone(&cache_engine);
+            tokio::task::spawn_blocking(move || engine.create_lock(LOCK_FILE_NAME))
+                .await
+                .expect("spawn_blocking panicked")?
+        };
 
         // Hash the project graph based on the preloaded state
         let mut fingerprint = WorkspaceGraphFingerprint::default();

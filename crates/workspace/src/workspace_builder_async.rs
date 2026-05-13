@@ -43,7 +43,7 @@ impl WorkspaceBuilderAsync {
     #[instrument(skip_all)]
     pub async fn new_with_cache(
         context: WorkspaceBuilderContext,
-        _cache_engine: &CacheEngine,
+        _cache_engine: Arc<CacheEngine>,
     ) -> miette::Result<Self> {
         let mut graph = Self::new(context).await?;
         graph.load_graphs().await?;

@@ -285,12 +285,12 @@ impl MoonSession {
         let context = self.create_workspace_graph_context().await?;
 
         let workspace_graph = Arc::new(if self.workspace_config.experiments.async_graph_building {
-            WorkspaceBuilderAsync::new_with_cache(context, &cache_engine)
+            WorkspaceBuilderAsync::new_with_cache(context, Arc::clone(&cache_engine))
                 .await?
                 .build()
                 .await?
         } else {
-            WorkspaceBuilder::new_with_cache(context, &cache_engine)
+            WorkspaceBuilder::new_with_cache(context, Arc::clone(&cache_engine))
                 .await?
                 .build()
                 .await?

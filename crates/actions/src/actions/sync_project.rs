@@ -1,5 +1,5 @@
 use crate::plugins::*;
-use crate::utils::should_skip_action_matching;
+use crate::utils::{acquire_lock, should_skip_action_matching};
 use moon_action::{Action, ActionStatus, SyncProjectNode};
 use moon_action_context::ActionContext;
 use moon_app_context::AppContext;
@@ -44,10 +44,11 @@ pub async fn sync_project(
     debug!("Syncing project {}", color::id(project_id));
 
     // Lock the project to avoid collisions
-    let _lock =
-        app_context
-            .cache_engine
-            .create_lock(format!("{}-{}", action.get_prefix(), project_id))?;
+    let _lock = acquire_lock(
+        &app_context.cache_engine,
+        format!("{}-{}", action.get_prefix(), project_id),
+    )
+    .await?;
 
     // Collect all project dependencies so we can pass them along
     let mut dependencies = FxHashMap::default();

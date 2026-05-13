@@ -1,3 +1,4 @@
+use crate::utils::acquire_lock;
 use moon_action::{Action, ActionStatus};
 use moon_action_context::ActionContext;
 use moon_app_context::AppContext;
@@ -70,7 +71,7 @@ pub async fn setup_proto(
     }
 
     // Install proto
-    let _lock = app_context.cache_engine.create_lock("proto-install")?;
+    let _lock = acquire_lock(&app_context.cache_engine, "proto-install".into()).await?;
 
     app_context.console.print_checkpoint(
         Checkpoint::Setup,

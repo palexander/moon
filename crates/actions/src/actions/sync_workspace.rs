@@ -1,6 +1,6 @@
 use crate::operations::*;
 use crate::plugins::*;
-use crate::utils::should_skip_action;
+use crate::utils::{acquire_lock, should_skip_action};
 use miette::IntoDiagnostic;
 use moon_action::{Action, ActionStatus, Operation};
 use moon_action_context::ActionContext;
@@ -22,7 +22,7 @@ pub async fn sync_workspace(
     app_context: Arc<AppContext>,
     workspace_graph: Arc<WorkspaceGraph>,
 ) -> miette::Result<ActionStatus> {
-    let _lock = app_context.cache_engine.create_lock(action.get_prefix())?;
+    let _lock = acquire_lock(&app_context.cache_engine, action.get_prefix().into()).await?;
 
     // Connect to the remote service in this action,
     // as it always runs before tasks, and we don't need it

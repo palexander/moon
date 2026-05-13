@@ -1,3 +1,4 @@
+use crate::utils::acquire_lock;
 use miette::IntoDiagnostic;
 use moon_action::{ActionStatus, Operation};
 use moon_app_context::AppContext;
@@ -70,11 +71,11 @@ async fn internal_exec_plugin_command(
 
     // Create a lock so that commands that clobber the same state (rustup, cargo, etc),
     // do not run at the same time and collide
-    let _lock = app_context.cache_engine.create_lock(format!(
-        "{}-{}",
-        options.prefix,
-        hash_component(command.get_label())
-    ))?;
+    let _lock = acquire_lock(
+        &app_context.cache_engine,
+        format!("{}-{}", options.prefix, hash_component(command.get_label())),
+    )
+    .await?;
 
     let mut cmd = AugmentedCommand::from_input(&app_context, GlobalEnvBag::instance(), input);
     cmd.inherit_from_plugins(options.project.as_deref(), None)
